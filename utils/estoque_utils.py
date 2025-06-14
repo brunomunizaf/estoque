@@ -15,14 +15,16 @@ def carregar_dados():
     transactions_response = supabase.table('transactions').select("*").execute()
     transactions_df = pd.DataFrame(transactions_response.data)
     
-    # Ensure required columns exist
+    # Ensure required columns exist in items
     if not all(col in items_df.columns for col in ['id', 'name', 'unit']):
         st.error("Items table is missing required columns: id, name, unit")
         st.stop()
-        
-    if not all(col in transactions_df.columns for col in ['item', 'amount', 'transaction_type']):
-        st.error("Transactions table is missing required columns: item, amount, transaction_type")
-        st.stop()
+    
+    # Only check transaction columns if there are transactions
+    if not transactions_df.empty:
+        if not all(col in transactions_df.columns for col in ['item', 'amount', 'transaction_type']):
+            st.error("Transactions table is missing required columns: item, amount, transaction_type")
+            st.stop()
     
     return items_df, transactions_df
 

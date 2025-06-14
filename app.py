@@ -15,7 +15,7 @@ def gerar_pdf(transacoes_hoje, relatorio):
     page_width = pdf.w - 2 * pdf.l_margin
     
     # Use built-in font instead of Arial
-    pdf.set_font("Helvetica", size=12)
+    pdf.set_font("Helvetica", style="B", size=12)
     
     # Movimentações do Dia primeiro
     pdf.cell(page_width, 10, txt="Movimentações do Dia", ln=True, align="C")
@@ -39,7 +39,8 @@ def gerar_pdf(transacoes_hoje, relatorio):
     pdf.cell(col_widths["Observação"], 10, "Observação", border=1, align="C", ln=True)
     
     pdf.set_font("Helvetica", size=12)
-    for _, row in transacoes_hoje.iterrows():
+    # Sort transactions in reverse order (most recent first)
+    for _, row in transacoes_hoje.sort_values(by="Data/Hora", ascending=False).iterrows():
         # Clean and encode text to handle special characters
         data_hora = str(row["Data/Hora"]).encode('latin1', 'replace').decode('latin1')
         quantidade = str(row["Quantidade"]).encode('latin1', 'replace').decode('latin1')
@@ -73,15 +74,24 @@ def gerar_pdf(transacoes_hoje, relatorio):
     pdf.cell(stock_col_widths["Saldo Atual"], 10, "Saldo Atual", border=1, align="C", ln=True)
     
     pdf.set_font("Helvetica", size=12)
-    for _, row in relatorio.iterrows():
-        # Clean and encode text to handle special characters
-        nome = str(row["Nome"]).encode('latin1', 'replace').decode('latin1')
-        unidade = str(row["Unidade"]).encode('latin1', 'replace').decode('latin1')
-        saldo = str(row["Saldo Atual"]).encode('latin1', 'replace').decode('latin1')
+    # Group items by section
+    for section, group in relatorio.groupby("Setor"):
+        # Add section header
+        pdf.set_font("Helvetica", style="B", size=12)
+        pdf.cell(page_width, 10, f"Setor: {section}", ln=True)
+        pdf.set_font("Helvetica", size=12)
         
-        pdf.cell(stock_col_widths["Nome"], 10, nome, border=1, align="C")
-        pdf.cell(stock_col_widths["Unidade"], 10, unidade, border=1, align="C")
-        pdf.cell(stock_col_widths["Saldo Atual"], 10, saldo, border=1, align="C", ln=True)
+        for _, row in group.iterrows():
+            # Clean and encode text to handle special characters
+            nome = str(row["Nome"]).encode('latin1', 'replace').decode('latin1')
+            unidade = str(row["Unidade"]).encode('latin1', 'replace').decode('latin1')
+            saldo = str(row["Saldo Atual"]).encode('latin1', 'replace').decode('latin1')
+            
+            pdf.cell(stock_col_widths["Nome"], 10, nome, border=1, align="C")
+            pdf.cell(stock_col_widths["Unidade"], 10, unidade, border=1, align="C")
+            pdf.cell(stock_col_widths["Saldo Atual"], 10, saldo, border=1, align="C", ln=True)
+        
+        pdf.ln(5)  # Add some space between sections
     
     pdf_bytes = pdf.output(dest='S').encode('latin1')
     pdf_buffer = io.BytesIO(pdf_bytes)
@@ -130,26 +140,34 @@ def main():
     # Carregar dados novamente sem filtro para o relatório
     items_df_full, transactions_df_full = carregar_dados()
     saldo_df = calcular_saldo(items_df_full, transactions_df_full)
-    relatorio = saldo_df[["name", "unit", "Saldo Atual"]].rename(columns={"name": "Nome", "unit": "Unidade"})
+    relatorio = saldo_df[["name", "unit", "Saldo Atual", "sector"]].rename(columns={
+        "name": "Nome", 
+        "unit": "Unidade",
+        "sector": "Setor"
+    })
     
-    # Join transactions with items to get names for the report
-    transactions_df_full = pd.merge(transactions_df_full, items_df_full[["id", "name"]], left_on="item", right_on="id", how="left")
-    
-    # Renomear colunas para português antes de filtrar transações do dia
-    colunas_pt = {
-        "timestamp": "Data/Hora",
-        "amount": "Quantidade",
-        "name": "Nome do Item",
-        "transaction_type": "Tipo de Movimentação",
-        "observation": "Observação"
-    }
-    transacoes_hoje = transactions_df_full.rename(columns=colunas_pt).copy()
-    
-    # Filtrar transações do dia atual
-    hoje = datetime.now(pytz.timezone('America/Sao_Paulo')).date()
-    transacoes_hoje["Data/Hora"] = pd.to_datetime(transacoes_hoje["Data/Hora"], format='ISO8601')
-    transacoes_hoje = transacoes_hoje[transacoes_hoje["Data/Hora"].dt.date == hoje]
-    transacoes_hoje["Data/Hora"] = transacoes_hoje["Data/Hora"].dt.strftime("%d/%m/%Y %H:%M:%S")
+    # Initialize empty DataFrame for transactions if none exist
+    if transactions_df_full.empty:
+        transacoes_hoje = pd.DataFrame(columns=["Data/Hora", "Quantidade", "Nome do Item", "Tipo de Movimentação", "Observação"])
+    else:
+        # Join transactions with items to get names for the report
+        transactions_df_full = pd.merge(transactions_df_full, items_df_full[["id", "name"]], left_on="item", right_on="id", how="left")
+        
+        # Renomear colunas para português antes de filtrar transações do dia
+        colunas_pt = {
+            "timestamp": "Data/Hora",
+            "amount": "Quantidade",
+            "name": "Nome do Item",
+            "transaction_type": "Tipo de Movimentação",
+            "observation": "Observação"
+        }
+        transacoes_hoje = transactions_df_full.rename(columns=colunas_pt).copy()
+        
+        # Filtrar transações do dia atual
+        hoje = datetime.now(pytz.timezone('America/Sao_Paulo')).date()
+        transacoes_hoje["Data/Hora"] = pd.to_datetime(transacoes_hoje["Data/Hora"], format='ISO8601')
+        transacoes_hoje = transacoes_hoje[transacoes_hoje["Data/Hora"].dt.date == hoje]
+        transacoes_hoje["Data/Hora"] = transacoes_hoje["Data/Hora"].dt.strftime("%d/%m/%Y %H:%M:%S")
     
     pdf_buffer = gerar_pdf(transacoes_hoje, relatorio)
     now_str = datetime.now().strftime("%Y-%m-%d_%H-%M")
