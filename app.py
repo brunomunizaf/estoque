@@ -1,11 +1,12 @@
 import streamlit as st
-from utils.estoque_utils import carregar_dados, mostrar_estoque, mostrar_movimentacoes, criar_movimentacao, calcular_saldo
+from utils.estoque_utils import carregar_dados, mostrar_estoque, mostrar_movimentacoes, criar_movimentacao, calcular_saldo, preparar_dados_grafico
 from fpdf import FPDF
 import io
 from datetime import datetime
 import pytz
 import pandas as pd
 import os
+import plotly.express as px
 
 def gerar_pdf(transacoes_hoje, relatorio):
     pdf = FPDF(orientation='L')  # Set landscape orientation
@@ -100,7 +101,7 @@ def gerar_pdf(transacoes_hoje, relatorio):
 def main():
     st.title("Touché | Estoque")
     
-    # Setores disponíveis (first)
+    # 1. Section filter
     setores = ["Todos", "Serigrafia", "Cola", "Outros", "Papéis", "Papelão"]
     setor = st.selectbox("Selecione o setor para visualizar:", setores)
 
@@ -113,7 +114,15 @@ def main():
         item_ids = set(items_df["id"])
         transactions_df = transactions_df[transactions_df["item"].isin(item_ids)]
 
-    # Formulário para nova movimentação (after dropdown)
+    # 2. List of items
+    st.header(f"Lista de Itens - {setor}")
+    mostrar_estoque(items_df, transactions_df)
+
+    # 3. List of transactions
+    st.header(f"Últimas 10 movimentações - {setor}")
+    mostrar_movimentacoes(transactions_df)
+
+    # 4. Register transaction
     st.header("Registrar Movimentação")
     with st.form("nova_movimentacao"):
         item_options = {row["name"]: row["id"] for _, row in items_df.iterrows()}
@@ -124,18 +133,41 @@ def main():
         submitted = st.form_submit_button("Registrar")
         if submitted:
             criar_movimentacao(item_options[item_nome], quantidade, tipo, observacao)
-            st.success("Movimentação registrada com sucesso!")
+            st.toast("Movimentação registrada com sucesso!", icon="✅")
             # Recarregar dados após inserção e re-filtrar
             items_df, transactions_df = carregar_dados()
             if setor != "Todos":
                 items_df = items_df[items_df["sector"] == setor]
                 item_ids = set(items_df["id"])
                 transactions_df = transactions_df[transactions_df["item"].isin(item_ids)]
+            # Reload transaction history
+            st.rerun()
 
-    mostrar_estoque(items_df, transactions_df)
-    mostrar_movimentacoes(transactions_df)
+    # 5. Graph of usage
+    st.header(f"Gráfico de Uso ao Longo do Tempo - {setor}")
+    dados_grafico = preparar_dados_grafico(items_df, transactions_df)
+    
+    # Filter data for items in the selected section
+    if setor != "Todos":
+        sector_items = items_df[items_df['sector'] == setor]['name'].tolist()
+        # Ensure only existing columns are used
+        dados_grafico = dados_grafico[[col for col in sector_items if col in dados_grafico.columns]]
+    
+    if not dados_grafico.empty:
+        fig = px.line(dados_grafico, 
+                     title="Evolução do Estoque ao Longo do Tempo",
+                     labels={"value": "Quantidade", "timestamp": "Data", "variable": "Item"})
+        fig.update_layout(
+            xaxis_title="Data",
+            yaxis_title="Quantidade",
+            hovermode="x unified",
+            legend_title="Itens"
+        )
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("Não há dados suficientes para gerar o gráfico.")
 
-    # Exportar relatório diário em PDF (bottom)
+    # 6. Export daily report
     st.header("Exportar Relatório Diário")
     # Carregar dados novamente sem filtro para o relatório
     items_df_full, transactions_df_full = carregar_dados()

@@ -60,9 +60,14 @@ def mostrar_movimentacoes(df):
         
         # Convert timestamp to datetime and format for display
         df['timestamp'] = pd.to_datetime(df['timestamp'], format='ISO8601')
-        df['timestamp'] = df['timestamp'].dt.strftime("%d/%m/%Y %H:%M:%S")
         
+        # Sort transactions by timestamp in descending order
         df = df.sort_values(by="timestamp", ascending=False)
+        
+        # Display only the last 10 most recent transactions
+        df = df.head(10)
+        
+        df['timestamp'] = df['timestamp'].dt.strftime("%d/%m/%Y %H:%M:%S")
         
         # Verificar quais colunas existem no DataFrame
         colunas_disponiveis = df.columns.tolist()
@@ -118,3 +123,42 @@ def calcular_saldo(items_df, transactions_df):
         result = result.drop(columns=["item"])
     
     return result
+
+def preparar_dados_grafico(items_df, transactions_df, selected_item_id=None):
+    if transactions_df.empty:
+        return pd.DataFrame()
+    
+    # Convert timestamp to datetime
+    transactions_df['timestamp'] = pd.to_datetime(transactions_df['timestamp'])
+    
+    # Merge transactions with items to get names
+    df = pd.merge(transactions_df, items_df[['id', 'name']], left_on='item', right_on='id', how='left')
+    
+    # Filter for the selected item if provided
+    if selected_item_id is not None:
+        df = df[df['item'] == selected_item_id]
+    
+    # Calculate cumulative sum for each item
+    df = df.sort_values('timestamp')
+    df['cumulative_amount'] = df.groupby('item')['amount'].cumsum()
+    
+    # Aggregate data by day
+    df['date'] = df['timestamp'].dt.date
+    df = df.groupby(['date', 'name'])['cumulative_amount'].last().reset_index()
+    
+    # Create a pivot table with date as index and items as columns
+    pivot_df = df.pivot_table(
+        index='date',
+        columns='name',
+        values='cumulative_amount',
+        aggfunc='last'
+    ).fillna(method='ffill')
+    
+    # Ensure all items from the selected sector are included
+    if selected_item_id is None:
+        all_items = items_df['name'].tolist()
+        for item in all_items:
+            if item not in pivot_df.columns:
+                pivot_df[item] = 0
+    
+    return pivot_df
