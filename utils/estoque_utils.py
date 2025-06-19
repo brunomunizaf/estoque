@@ -15,6 +15,22 @@ def carregar_dados():
     transactions_response = supabase.table('transactions').select("*").execute()
     transactions_df = pd.DataFrame(transactions_response.data)
     
+    # Carregar pessoas - explicitly select all columns
+    try:
+        people_response = supabase.table('people').select('id, name').execute()
+        people_df = pd.DataFrame(people_response.data)
+    except Exception as e:
+        print(f"Error fetching people data: {str(e)}")
+        people_df = pd.DataFrame(columns=['id', 'name'])
+
+    # Carregar projetos
+    try:
+        projects_response = supabase.table('projects').select('id, name').execute()
+        projects_df = pd.DataFrame(projects_response.data)
+    except Exception as e:
+        print(f"Error fetching projects data: {str(e)}")
+        projects_df = pd.DataFrame(columns=['id', 'name'])
+
     # Ensure required columns exist in items
     if not all(col in items_df.columns for col in ['id', 'name', 'unit']):
         st.error("Items table is missing required columns: id, name, unit")
@@ -26,7 +42,7 @@ def carregar_dados():
             st.error("Transactions table is missing required columns: item, amount, transaction_type")
             st.stop()
     
-    return items_df, transactions_df
+    return items_df, transactions_df, people_df, projects_df
 
 def mostrar_estoque(df, transactions_df=None):
     if transactions_df is not None:
@@ -38,7 +54,7 @@ def mostrar_estoque(df, transactions_df=None):
             "Saldo Atual": "Saldo Atual"
         }
         saldo_df = saldo_df.rename(columns=colunas_pt)
-        st.dataframe(saldo_df[["Nome", "Unidade", "Saldo Atual"]], use_container_width=True)
+        st.dataframe(saldo_df[["Nome", "Unidade", "Saldo Atual"]], hide_index=True, use_container_width=True)
     else:
         # Renomear colunas para português
         colunas_pt = {
@@ -46,7 +62,7 @@ def mostrar_estoque(df, transactions_df=None):
             "unit": "Unidade"
         }
         df = df.rename(columns=colunas_pt)
-        st.dataframe(df[["Nome", "Unidade"]], use_container_width=True)
+        st.dataframe(df[["Nome", "Unidade"]], hide_index=True, use_container_width=True)
 
 def mostrar_movimentacoes(df):
     if not df.empty:
@@ -75,9 +91,9 @@ def mostrar_movimentacoes(df):
         # Mapear colunas originais para português
         colunas_pt = {
             "timestamp": "Data/Hora",
-            "amount": "Quantidade",
-            "name": "Nome do Item",
-            "transaction_type": "Tipo de Movimentação",
+            "amount": "Qtd",
+            "name": "Item",
+            "transaction_type": "Tipo",
             "observation": "Observação"
         }
         
@@ -92,7 +108,7 @@ def mostrar_movimentacoes(df):
     else:
         st.write("Nenhuma movimentação encontrada.")
 
-def criar_movimentacao(item_id, quantidade, tipo, observacao=None):
+def criar_movimentacao(item_id, quantidade, tipo, observacao=None, author_id=None):
     supabase = get_supabase_client()
     
     # Create transaction with ISO format timestamp
@@ -101,6 +117,7 @@ def criar_movimentacao(item_id, quantidade, tipo, observacao=None):
         "amount": quantidade if tipo == "Entrada" else -quantidade,
         "transaction_type": tipo,
         "observation": observacao,
+        "author": author_id,
         "timestamp": datetime.now(pytz.timezone('America/Sao_Paulo')).isoformat()
     }
     
@@ -137,13 +154,15 @@ def preparar_dados_grafico(items_df, transactions_df, selected_item_id=None):
     # Filter for the selected item if provided
     if selected_item_id is not None:
         df = df[df['item'] == selected_item_id]
+        if df.empty:
+            return pd.DataFrame()
     
     # Calculate cumulative sum for each item
     df = df.sort_values('timestamp')
     df['cumulative_amount'] = df.groupby('item')['amount'].cumsum()
     
-    # Aggregate data by day
-    df['date'] = df['timestamp'].dt.date
+    # Aggregate data by day and ensure dates are in datetime format
+    df['date'] = pd.to_datetime(df['timestamp'].dt.date)
     df = df.groupby(['date', 'name'])['cumulative_amount'].last().reset_index()
     
     # Create a pivot table with date as index and items as columns
@@ -154,11 +173,8 @@ def preparar_dados_grafico(items_df, transactions_df, selected_item_id=None):
         aggfunc='last'
     ).fillna(method='ffill')
     
-    # Ensure all items from the selected sector are included
-    if selected_item_id is None:
-        all_items = items_df['name'].tolist()
-        for item in all_items:
-            if item not in pivot_df.columns:
-                pivot_df[item] = 0
+    # If no data after pivot, return empty DataFrame
+    if pivot_df.empty:
+        return pd.DataFrame()
     
     return pivot_df

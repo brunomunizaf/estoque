@@ -7,6 +7,9 @@ import pytz
 import pandas as pd
 import os
 import plotly.express as px
+import plotly.graph_objects as go
+import numpy as np
+from streamlit_echarts import st_echarts
 
 def gerar_pdf(transacoes_hoje, relatorio):
     pdf = FPDF(orientation='L')  # Set landscape orientation
@@ -101,12 +104,58 @@ def gerar_pdf(transacoes_hoje, relatorio):
 def main():
     st.title("Touché | Estoque")
     
-    # 1. Section filter
-    setores = ["Todos", "Serigrafia", "Cola", "Outros", "Papéis", "Papelão"]
-    setor = st.selectbox("Selecione o setor para visualizar:", setores)
+    # Initialize session state for selected sector
+    if 'selected_sector' not in st.session_state:
+        st.session_state.selected_sector = "Todos"
+    
+    # Add CSS to ensure equal spacing
+    st.markdown("""
+        <style>
+        .stButton {
+            width: 100%;
+            display: flex;
+            justify-content: center;
+        }
+        .stButton > button {
+            width: 100%;
+            padding-left: 1rem;
+            padding-right: 1rem;
+        }
+        </style>
+    """, unsafe_allow_html=True)
+    
+    # Create buttons for each sector with equal spacing
+    col1, col2, col3, col4, col5, col6 = st.columns([1, 1, 1, 1, 1, 1])
+    
+    with col1:
+        if st.button("Todos", type="primary" if st.session_state.selected_sector == "Todos" else "secondary", use_container_width=True):
+            st.session_state.selected_sector = "Todos"
+            st.rerun()
+    with col2:
+        if st.button("Serigrafia", type="primary" if st.session_state.selected_sector == "Serigrafia" else "secondary", use_container_width=True):
+            st.session_state.selected_sector = "Serigrafia"
+            st.rerun()
+    with col3:
+        if st.button("Papelão", type="primary" if st.session_state.selected_sector == "Papelão" else "secondary", use_container_width=True):
+            st.session_state.selected_sector = "Papelão"
+            st.rerun()
+    with col4:
+        if st.button("Papéis", type="primary" if st.session_state.selected_sector == "Papéis" else "secondary", use_container_width=True):
+            st.session_state.selected_sector = "Papéis"
+            st.rerun()
+    with col5:
+        if st.button("Cola", type="primary" if st.session_state.selected_sector == "Cola" else "secondary", use_container_width=True):
+            st.session_state.selected_sector = "Cola"
+            st.rerun()        
+    with col6:
+        if st.button("Outros", type="primary" if st.session_state.selected_sector == "Outros" else "secondary", use_container_width=True):
+            st.session_state.selected_sector = "Outros"
+            st.rerun()
+    
+    setor = st.session_state.selected_sector
 
     # Carregar dados
-    items_df, transactions_df = carregar_dados()
+    items_df, transactions_df, people_df, projects_df = carregar_dados()
 
     # Filtrar visualização pelo setor
     if setor != "Todos":
@@ -114,63 +163,271 @@ def main():
         item_ids = set(items_df["id"])
         transactions_df = transactions_df[transactions_df["item"].isin(item_ids)]
 
+    # Move item selection here, before the first table
+    item_options = {row["name"]: row["id"] for _, row in items_df.iterrows()}
+    
+    # Reset selected item if it's not in the current sector's items
+    if 'selected_item' in st.session_state and st.session_state.selected_item not in item_options:
+        st.session_state.selected_item = list(item_options.keys())[0] if item_options else None
+    
+    if item_options:
+        selected_item = st.selectbox(
+            "Item",
+            list(item_options.keys()),
+            key="item_selector",
+            index=list(item_options.keys()).index(st.session_state.selected_item) if 'selected_item' in st.session_state else 0
+        )
+        # Get current amount for selected item
+        saldo_df = calcular_saldo(items_df, transactions_df)
+        current_amount = saldo_df[saldo_df['name'] == selected_item]['Saldo Atual'].iloc[0]
+        st.markdown(f"Quantidade em estoque atualmente: **{current_amount}**")
+
+        # Use the selected item from the single selector
+        selected_item_id = item_options[selected_item]
+        
+        dados_grafico = preparar_dados_grafico(items_df, transactions_df, selected_item_id)
+        
+        # Filter data for the specific selected item
+        if selected_item and not dados_grafico.empty:
+            dados_grafico = dados_grafico[[selected_item]]
+        
+        if not dados_grafico.empty:
+            # Reset index to make date a column
+            dados_grafico = dados_grafico.reset_index()
+            
+            # Format dates for display
+            dados_grafico['date'] = pd.to_datetime(dados_grafico['date']).dt.strftime('%d/%m/%Y')
+            
+            # Get today's date in the same format
+            hoje = datetime.now(pytz.timezone('America/Sao_Paulo')).strftime('%d/%m/%Y')
+            
+            # Replace last date with "Hoje" only if it matches today's date
+            dates = dados_grafico['date'].tolist()
+            if dates and dates[-1] == hoje:
+                dates[-1] = "Hoje"
+            
+            # Prepare data for candlestick
+            values = dados_grafico[dados_grafico.columns[1]].values.astype(float).tolist()
+            candlestick_data = []
+            for i in range(len(values)):
+                if i == 0:
+                    # For first point: [open, close, min, max]
+                    candlestick_data.append([0, values[i], 0, values[i]])
+                else:
+                    # For other points: [previous close, current close, min(prev,current), max(prev,current)]
+                    candlestick_data.append([
+                        values[i-1],
+                        values[i],
+                        min(values[i-1], values[i]),
+                        max(values[i-1], values[i])
+                    ])
+            
+            try:
+                # Convert data for Plotly
+                opens = [float(data[0]) for data in candlestick_data]
+                closes = [float(data[1]) for data in candlestick_data]
+                lows = [float(data[2]) for data in candlestick_data]
+                highs = [float(data[3]) for data in candlestick_data]
+                
+                # Create hover text
+                hover_texts = [
+                    f"Data: {date}<br>" +
+                    f"Início do dia: {open_val:.0f}<br>" +
+                    f"Final do dia: {close_val:.0f}"
+                    for date, open_val, close_val, low_val, high_val 
+                    in zip(dates, opens, closes, lows, highs)
+                ]
+                
+                # Create Plotly candlestick chart
+                fig = go.Figure()
+                fig.add_trace(go.Candlestick(
+                    x=dates,
+                    open=opens,
+                    high=highs,
+                    low=lows,
+                    close=closes,
+                    name='Quantidade',
+                    increasing=dict(line=dict(color='#91cc75')),  # green for increase
+                    decreasing=dict(line=dict(color='#ee6666')),  # red for decrease
+                    text=hover_texts,
+                    hoverinfo='text'
+                ))
+                
+                # Update layout
+                fig.update_layout(
+                    plot_bgcolor='white',
+                    xaxis=dict(
+                        showgrid=True,
+                        gridwidth=1,
+                        gridcolor='rgba(128,128,128,0.2)',
+                        showline=True,
+                        linewidth=1,
+                        linecolor='rgba(128,128,128,0.2)',
+                        rangeslider=dict(visible=False)  # Remove the range slider
+                    ),
+                    yaxis=dict(
+                        title='Quantidade',
+                        showgrid=True,
+                        gridwidth=1,
+                        gridcolor='rgba(128,128,128,0.2)',
+                        showline=True,
+                        linewidth=1,
+                        linecolor='rgba(128,128,128,0.2)'
+                    ),
+                    margin=dict(l=40, r=40, t=40, b=40)
+                )
+                
+                # Display the plot
+                st.plotly_chart(fig, use_container_width=True)
+            except Exception as e:
+                st.error(f"Erro ao criar o gráfico: {str(e)}")
+                st.write("Dados do gráfico:", candlestick_data)
+            
+            # Add transaction history table
+            st.subheader(f"Histórico de {selected_item.lower()}")
+            
+            # Get transactions for the selected item
+            item_transactions = transactions_df[transactions_df['item'] == selected_item_id].copy()
+            if not item_transactions.empty:
+                # Convert timestamp to datetime and format
+                item_transactions['timestamp'] = pd.to_datetime(item_transactions['timestamp'])
+                item_transactions = item_transactions.sort_values('timestamp', ascending=False)
+                item_transactions['timestamp'] = item_transactions['timestamp'].dt.strftime("%d/%m/%Y %H:%M:%S")
+                
+                # Join with people data to get author names
+                if not people_df.empty and 'author' in item_transactions.columns:
+                    item_transactions = pd.merge(
+                        item_transactions,
+                        people_df[['id', 'name']],
+                        left_on='author',
+                        right_on='id',
+                        how='left',
+                        suffixes=('', '_author')
+                    )
+
+                # Format the table columns
+                rename_cols = {
+                    'timestamp': 'Data/Hora',
+                    'amount': 'Qtd',
+                    'transaction_type': 'Tipo',
+                    'observation': 'Observação'
+                }
+                
+                # Add author column if available
+                if 'name' in item_transactions.columns:
+                    rename_cols['name'] = 'Autor'
+                elif 'name_author' in item_transactions.columns:
+                    rename_cols['name_author'] = 'Autor'
+                
+                item_transactions = item_transactions.rename(columns=rename_cols)
+                
+                # Style the table
+                st.markdown("""
+                    <style>
+                    .dataframe {
+                        font-size: 1rem;
+                        width: 100%;
+                    }
+                    .dataframe td, .dataframe th {
+                        white-space: nowrap;
+                        text-align: center !important;
+                    }
+                    .dataframe th {
+                        background-color: rgba(128, 128, 128, 0.1);
+                    }
+                    </style>
+                """, unsafe_allow_html=True)
+                
+                # Get the columns we want to display
+                display_cols = ['Data/Hora', 'Qtd', 'Tipo']
+                if 'Autor' in item_transactions.columns:
+                    display_cols.append('Autor')
+                display_cols.append('Observação')
+
+                # Display the table
+                st.dataframe(
+                    item_transactions[display_cols],
+                    hide_index=True,
+                    use_container_width=True
+                )
+            else:
+                st.info("Nenhuma movimentação encontrada para este item.")
+            
+            st.session_state.selected_item = selected_item
+
     # 2. List of items
-    st.header(f"Lista de Itens - {setor}")
+    st.subheader(f"Estoque atual de todos os itens de {setor.lower()}")
     mostrar_estoque(items_df, transactions_df)
 
-    # 3. List of transactions
-    st.header(f"Últimas 10 movimentações - {setor}")
-    mostrar_movimentacoes(transactions_df)
-
     # 4. Register transaction
-    st.header("Registrar Movimentação")
-    with st.form("nova_movimentacao"):
-        item_options = {row["name"]: row["id"] for _, row in items_df.iterrows()}
-        item_nome = st.selectbox("Item", list(item_options.keys()))
-        tipo = st.radio("Tipo de Movimentação", ["Entrada", "Saída"])
-        quantidade = st.number_input("Quantidade", min_value=1, step=1)
-        observacao = st.text_input("Observação (opcional)")
-        submitted = st.form_submit_button("Registrar")
-        if submitted:
-            criar_movimentacao(item_options[item_nome], quantidade, tipo, observacao)
-            st.toast("Movimentação registrada com sucesso!", icon="✅")
-            # Recarregar dados após inserção e re-filtrar
-            items_df, transactions_df = carregar_dados()
-            if setor != "Todos":
-                items_df = items_df[items_df["sector"] == setor]
-                item_ids = set(items_df["id"])
-                transactions_df = transactions_df[transactions_df["item"].isin(item_ids)]
-            # Reload transaction history
-            st.rerun()
-
-    # 5. Graph of usage
-    st.header(f"Gráfico de Uso ao Longo do Tempo - {setor}")
-    dados_grafico = preparar_dados_grafico(items_df, transactions_df)
-    
-    # Filter data for items in the selected section
-    if setor != "Todos":
-        sector_items = items_df[items_df['sector'] == setor]['name'].tolist()
-        # Ensure only existing columns are used
-        dados_grafico = dados_grafico[[col for col in sector_items if col in dados_grafico.columns]]
-    
-    if not dados_grafico.empty:
-        fig = px.line(dados_grafico, 
-                     title="Evolução do Estoque ao Longo do Tempo",
-                     labels={"value": "Quantidade", "timestamp": "Data", "variable": "Item"})
-        fig.update_layout(
-            xaxis_title="Data",
-            yaxis_title="Quantidade",
-            hovermode="x unified",
-            legend_title="Itens"
+    st.subheader("Registrar nova movimentação")
+    if item_options:
+        # Radio button outside the form to control form state
+        movimento_tipo = st.radio(
+            "Tipo de Movimentação",
+            ["Entrada", "Saída", "Contagem inicial"]
         )
-        st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.info("Não há dados suficientes para gerar o gráfico.")
+
+        # Project selection is now OUTSIDE the form to allow for immediate refresh
+        project_options = {row["name"]: row["id"] for _, row in projects_df.iterrows()}
+        project_list = ["Nenhum"] + list(project_options.keys())
+        selected_project = st.selectbox(
+            "Projeto",
+            options=project_list,
+            key=f"project_select_{movimento_tipo}" # Keep key dynamic to reset on type change
+        )
+        
+        with st.form(f"nova_movimentacao_{movimento_tipo}"):
+            col1, col2 = st.columns([1.5, 3])
+            
+            with col1:
+                quantidade = st.number_input("Quantidade", min_value=1, step=1)
+            
+            with col2:
+                # Author selection
+                author_options = {row["name"]: row["id"] for _, row in people_df.iterrows()}
+                selected_author = st.selectbox(
+                    "Autor",
+                    options=list(author_options.keys()),
+                    key=f"author_select_{movimento_tipo}"
+                )
+
+            # Determine observation value and disabled state
+            obs_value = ""
+            obs_disabled = False
+            if movimento_tipo == "Contagem inicial":
+                obs_value = "Contagem inicial"
+                obs_disabled = True
+            elif selected_project != "Nenhum":
+                obs_value = selected_project
+                obs_disabled = True
+
+            observacao = st.text_input(
+                "Observação (opcional)",
+                value=obs_value,
+                disabled=obs_disabled,
+                key=f"obs_input_{movimento_tipo}_{selected_project}"  # Dynamic key still useful
+            )
+            
+            submitted = st.form_submit_button("Registrar", use_container_width=True)
+            if submitted:
+                tipo = "Entrada" if movimento_tipo == "Contagem inicial" else movimento_tipo
+                obs = observacao
+                
+                criar_movimentacao(
+                    item_options[selected_item],
+                    quantidade,
+                    tipo,
+                    obs,
+                    author_options[selected_author]
+                )
+                st.toast("Movimentação registrada com sucesso!", icon="✅")
+                # Reload transaction history
+                st.rerun()
 
     # 6. Export daily report
-    st.header("Exportar Relatório Diário")
     # Carregar dados novamente sem filtro para o relatório
-    items_df_full, transactions_df_full = carregar_dados()
+    items_df_full, transactions_df_full, _, _ = carregar_dados()
     saldo_df = calcular_saldo(items_df_full, transactions_df_full)
     relatorio = saldo_df[["name", "unit", "Saldo Atual", "sector"]].rename(columns={
         "name": "Nome", 
@@ -199,15 +456,17 @@ def main():
         hoje = datetime.now(pytz.timezone('America/Sao_Paulo')).date()
         transacoes_hoje["Data/Hora"] = pd.to_datetime(transacoes_hoje["Data/Hora"], format='ISO8601')
         transacoes_hoje = transacoes_hoje[transacoes_hoje["Data/Hora"].dt.date == hoje]
-        transacoes_hoje["Data/Hora"] = transacoes_hoje["Data/Hora"].dt.strftime("%d/%m/%Y %H:%M:%S")
-    
+        if not transacoes_hoje.empty:
+            transacoes_hoje["Data/Hora"] = transacoes_hoje["Data/Hora"].dt.strftime("%d/%m/%Y %H:%M:%S")
+
     pdf_buffer = gerar_pdf(transacoes_hoje, relatorio)
     now_str = datetime.now().strftime("%Y-%m-%d_%H-%M")
     st.download_button(
-        label="Exportar PDF do Estoque Atual",
+        label="Exportar estoque atual + transações do dia",
         data=pdf_buffer,
         file_name=f"relatorio_estoque_{now_str}.pdf",
-        mime="application/pdf"
+        mime="application/pdf",
+        use_container_width=True
     )
 
 if __name__ == "__main__":
